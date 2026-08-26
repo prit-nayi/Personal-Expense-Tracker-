@@ -68,6 +68,6 @@ A modern, responsive, and secure personal finance application built with **FastA
 - **Responsive Design**: WCAG 2.2 AA compliant UI tailored for desktop and mobile devices.
 
   ## FREE HOSTED ON
-  - **Database** :- Postgres sql # HOSTED on Neon
-  - **backend** :- FastApi  # HOSTED on Render
-  - **Frontend** :- React + TypeScript # HOSTED on Vercel   
+  - **Database** :- Postgres sql          **HOSTED** on Neon
+  - **backend**  :- FastApi                **HOSTED** on Render
+  - **Frontend** :- React + TypeScript    **HOSTED** on Vercel   
