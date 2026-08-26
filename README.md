@@ -66,3 +66,8 @@ A modern, responsive, and secure personal finance application built with **FastA
 - **Interactive Analytics**: Dashboard summary cards, Category spending donut chart, 6-month historical income vs expense trends (Recharts).
 - **Data Export**: Export transaction records to CSV format.
 - **Responsive Design**: WCAG 2.2 AA compliant UI tailored for desktop and mobile devices.
+
+  ## FREE HOSTED ON
+  - ** Database** :- Postgres sql # HOSTED on Neon
+  - ** backend** :- FastApi  # HOSTED on Render
+  - ** Frontend** :- React + TypeScript # HOSTED on Vercel   
