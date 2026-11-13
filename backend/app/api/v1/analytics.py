@@ -11,7 +11,7 @@ router = APIRouter(prefix="/analytics", tags=["Analytics"])
 
 @router.get("/dashboard", response_model=AnalyticsResponse)
 def get_dashboard_analytics(
-    month: Optional[str] = Query(default=None, description="Format YYYY-MM, defaults to current month"),
+    month: Optional[str] = Query(default=None, pattern=r"^\d{4}-(0[1-9]|1[0-2])$", description="Format YYYY-MM, defaults to current month"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):

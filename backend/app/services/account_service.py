@@ -1,7 +1,7 @@
 from decimal import Decimal
-from typing import List, Optional
+from typing import List, Optional, Dict
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import func, case
 from fastapi import HTTPException, status
 from app.models.account import Account
 from app.models.transaction import Transaction
@@ -9,37 +9,52 @@ from app.schemas.account import AccountCreate, AccountUpdate, AccountOut
 
 class AccountService:
     @staticmethod
+    def get_balances(db: Session, user_id: str, account_ids: List[str]) -> Dict[str, Decimal]:
+        if not account_ids:
+            return {}
+        accounts = db.query(Account.id, Account.opening_balance).filter(
+            Account.id.in_(account_ids),
+            Account.user_id == user_id
+        ).all()
+        balances = {acc_id: Decimal(str(ob or 0)) for acc_id, ob in accounts}
+
+        primary_txs = db.query(
+            Transaction.account_id,
+            func.coalesce(func.sum(
+                case(
+                    (Transaction.type == "income", Transaction.amount),
+                    (Transaction.type.in_(["expense", "transfer"]), -Transaction.amount),
+                    else_=0
+                )
+            ), 0)
+        ).filter(
+            Transaction.user_id == user_id,
+            Transaction.account_id.in_(account_ids)
+        ).group_by(Transaction.account_id).all()
+
+        for acc_id, net in primary_txs:
+            if acc_id in balances:
+                balances[acc_id] += Decimal(str(net))
+
+        transfers_in = db.query(
+            Transaction.destination_account_id,
+            func.coalesce(func.sum(Transaction.amount), 0)
+        ).filter(
+            Transaction.user_id == user_id,
+            Transaction.destination_account_id.in_(account_ids),
+            Transaction.type == "transfer"
+        ).group_by(Transaction.destination_account_id).all()
+
+        for acc_id, tin in transfers_in:
+            if acc_id in balances:
+                balances[acc_id] += Decimal(str(tin))
+
+        return {k: v.quantize(Decimal("0.01")) for k, v in balances.items()}
+
+    @staticmethod
     def calculate_account_balance(db: Session, account: Account) -> Decimal:
-        # Sum income
-        income_total = db.query(func.coalesce(func.sum(Transaction.amount), 0)).filter(
-            Transaction.user_id == account.user_id,
-            Transaction.account_id == account.id,
-            Transaction.type == "income"
-        ).scalar()
-
-        # Sum expenses
-        expense_total = db.query(func.coalesce(func.sum(Transaction.amount), 0)).filter(
-            Transaction.user_id == account.user_id,
-            Transaction.account_id == account.id,
-            Transaction.type == "expense"
-        ).scalar()
-
-        # Sum transfers out
-        transfers_out = db.query(func.coalesce(func.sum(Transaction.amount), 0)).filter(
-            Transaction.user_id == account.user_id,
-            Transaction.account_id == account.id,
-            Transaction.type == "transfer"
-        ).scalar()
-
-        # Sum transfers in
-        transfers_in = db.query(func.coalesce(func.sum(Transaction.amount), 0)).filter(
-            Transaction.user_id == account.user_id,
-            Transaction.destination_account_id == account.id,
-            Transaction.type == "transfer"
-        ).scalar()
-
-        balance = Decimal(str(account.opening_balance)) + Decimal(str(income_total)) - Decimal(str(expense_total)) - Decimal(str(transfers_out)) + Decimal(str(transfers_in))
-        return balance.quantize(Decimal("0.01"))
+        balances = AccountService.get_balances(db, account.user_id, [account.id])
+        return balances.get(account.id, Decimal(str(account.opening_balance)).quantize(Decimal("0.01")))
 
     @staticmethod
     def get_accounts(db: Session, user_id: str, include_archived: bool = False) -> List[AccountOut]:
@@ -48,11 +63,13 @@ class AccountService:
             query = query.filter(Account.is_archived == False)
         accounts = query.order_by(Account.created_at.asc()).all()
 
+        account_ids = [acc.id for acc in accounts]
+        balances = AccountService.get_balances(db, user_id, account_ids)
+
         results = []
         for acc in accounts:
-            current_balance = AccountService.calculate_account_balance(db, acc)
             acc_out = AccountOut.model_validate(acc)
-            acc_out.current_balance = current_balance
+            acc_out.current_balance = balances.get(acc.id, Decimal(str(acc.opening_balance)).quantize(Decimal("0.01")))
             results.append(acc_out)
         return results
 

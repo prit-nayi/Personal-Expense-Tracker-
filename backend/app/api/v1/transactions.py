@@ -20,7 +20,7 @@ def get_transactions(
     search: Optional[str] = Query(default=None),
     page: int = Query(default=1, ge=1),
     limit: int = Query(default=20, ge=1, le=100),
-    sort_by: str = Query(default="occurred_at"),
+    sort_by: str = Query(default="occurred_at", pattern=r"^(occurred_at|amount|created_at|description)$"),
     sort_order: str = Query(default="desc"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)

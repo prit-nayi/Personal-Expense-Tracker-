@@ -30,12 +30,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           const currentUser = await authApi.getMe();
           setUser(currentUser);
           localStorage.setItem('user', JSON.stringify(currentUser));
-        } catch (error) {
+        } catch (error: any) {
           console.error('Failed to restore session:', error);
-          localStorage.removeItem('access_token');
-          localStorage.removeItem('user');
-          setUser(null);
-          setToken(null);
+          if (error.response?.status === 401) {
+            localStorage.removeItem('access_token');
+            localStorage.removeItem('user');
+            setUser(null);
+            setToken(null);
+          }
         }
       }
       setIsLoading(false);

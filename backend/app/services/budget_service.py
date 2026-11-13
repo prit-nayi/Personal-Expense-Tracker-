@@ -2,8 +2,8 @@ from datetime import datetime
 from decimal import Decimal
 from typing import List, Optional
 import calendar
-from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy.orm import Session, joinedload
+from sqlalchemy import func, or_
 from fastapi import HTTPException, status
 from app.models.budget import Budget
 from app.models.category import Category
@@ -20,18 +20,21 @@ class BudgetService:
         return start_date, end_date
 
     @staticmethod
-    def _enrich_budget_out(db: Session, budget: Budget) -> BudgetOut:
-        start_date, end_date = BudgetService._get_month_date_range(budget.month)
+    def _enrich_budget_out(db: Session, budget: Budget, spent_val: Optional[Decimal] = None) -> BudgetOut:
+        if spent_val is not None:
+            spent_amount = spent_val
+        else:
+            start_date, end_date = BudgetService._get_month_date_range(budget.month)
 
-        spent = db.query(func.coalesce(func.sum(Transaction.amount), 0)).filter(
-            Transaction.user_id == budget.user_id,
-            Transaction.category_id == budget.category_id,
-            Transaction.type == "expense",
-            Transaction.occurred_at >= start_date,
-            Transaction.occurred_at <= end_date
-        ).scalar()
+            spent = db.query(func.coalesce(func.sum(Transaction.amount), 0)).filter(
+                Transaction.user_id == budget.user_id,
+                Transaction.category_id == budget.category_id,
+                Transaction.type == "expense",
+                Transaction.occurred_at >= start_date,
+                Transaction.occurred_at <= end_date
+            ).scalar()
 
-        spent_amount = Decimal(str(spent)).quantize(Decimal("0.01"))
+            spent_amount = Decimal(str(spent)).quantize(Decimal("0.01"))
         budget_amount = Decimal(str(budget.amount)).quantize(Decimal("0.01"))
         remaining_amount = (budget_amount - spent_amount).quantize(Decimal("0.01"))
 
@@ -61,17 +64,36 @@ class BudgetService:
             now = datetime.now()
             month = f"{now.year:04d}-{now.month:02d}"
 
-        budgets = db.query(Budget).filter(
+        budgets = db.query(Budget).options(joinedload(Budget.category)).filter(
             Budget.user_id == user_id,
             Budget.month == month
         ).all()
 
-        return [BudgetService._enrich_budget_out(db, b) for b in budgets]
+        start_date, end_date = BudgetService._get_month_date_range(month)
+        spent_rows = db.query(
+            Transaction.category_id,
+            func.coalesce(func.sum(Transaction.amount), 0)
+        ).filter(
+            Transaction.user_id == user_id,
+            Transaction.type == "expense",
+            Transaction.occurred_at >= start_date,
+            Transaction.occurred_at <= end_date
+        ).group_by(Transaction.category_id).all()
+
+        spent_map = {cat_id: Decimal(str(amt)).quantize(Decimal("0.01")) for cat_id, amt in spent_rows}
+
+        return [
+            BudgetService._enrich_budget_out(db, b, spent_map.get(b.category_id, Decimal("0.00")))
+            for b in budgets
+        ]
 
     @staticmethod
     def create_budget(db: Session, user_id: str, budget_in: BudgetCreate) -> BudgetOut:
         # Validate category
-        cat = db.query(Category).filter(Category.id == budget_in.category_id).first()
+        cat = db.query(Category).filter(
+            Category.id == budget_in.category_id,
+            or_(Category.user_id == user_id, Category.user_id.is_(None))
+        ).first()
         if not cat:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Category not found.")
         if cat.type != "expense":

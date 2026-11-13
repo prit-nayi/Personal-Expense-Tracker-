@@ -1,7 +1,7 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Optional, List, Literal
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, model_validator, field_validator, field_serializer, ConfigDict
 from app.schemas.account import AccountOut
 from app.schemas.category import CategoryOut
 
@@ -18,6 +18,14 @@ class TransactionBase(BaseModel):
     description: str = Field(..., min_length=1, max_length=255)
     notes: Optional[str] = Field(default=None, max_length=500)
     tags: Optional[str] = Field(default=None, max_length=255)
+
+    @field_validator("occurred_at", mode="after")
+    @classmethod
+    def convert_to_naive_utc(cls, v: Optional[datetime]) -> Optional[datetime]:
+        """Convert aware datetimes to naive UTC. Month boundaries are UTC."""
+        if v is not None and v.tzinfo is not None:
+            return v.astimezone(timezone.utc).replace(tzinfo=None)
+        return v
 
     @model_validator(mode="after")
     def validate_transaction_fields(self):
@@ -46,6 +54,14 @@ class TransactionUpdate(BaseModel):
     notes: Optional[str] = Field(default=None, max_length=500)
     tags: Optional[str] = Field(default=None, max_length=255)
 
+    @field_validator("occurred_at", mode="after")
+    @classmethod
+    def convert_to_naive_utc(cls, v: Optional[datetime]) -> Optional[datetime]:
+        """Convert aware datetimes to naive UTC. Month boundaries are UTC."""
+        if v is not None and v.tzinfo is not None:
+            return v.astimezone(timezone.utc).replace(tzinfo=None)
+        return v
+
 class TransactionOut(TransactionBase):
     id: str
     user_id: str
@@ -57,8 +73,14 @@ class TransactionOut(TransactionBase):
     category_icon: Optional[str] = None
     category_color: Optional[str] = None
 
-    class Config:
-        from_attributes = True
+    @field_serializer("occurred_at")
+    def serialize_occurred_at(self, dt: datetime, _info) -> str:
+        """Serialize occurred_at as ISO UTC timestamp ending with Z."""
+        if dt.tzinfo is None:
+            return dt.isoformat() + "Z"
+        return dt.astimezone(timezone.utc).replace(tzinfo=None).isoformat() + "Z"
+
+    model_config = ConfigDict(from_attributes=True)
 
 class PaginatedTransactions(BaseModel):
     items: List[TransactionOut]

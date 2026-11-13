@@ -41,9 +41,10 @@ class CategoryService:
     @staticmethod
     def create_custom_category(db: Session, user_id: str, category_in: CategoryCreate) -> CategoryOut:
         # Check duplicate per user
+        escaped_name = category_in.name.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         duplicate = db.query(Category).filter(
             or_(Category.user_id == user_id, Category.user_id.is_(None)),
-            Category.name.ilike(category_in.name.strip()),
+            Category.name.ilike(escaped_name, escape="\\"),
             Category.type == category_in.type
         ).first()
         if duplicate:
@@ -69,13 +70,14 @@ class CategoryService:
 
     @staticmethod
     def update_category(db: Session, user_id: str, category_id: str, category_in: CategoryUpdate) -> CategoryOut:
-        category = db.query(Category).filter(Category.id == category_id).first()
+        category = db.query(Category).filter(
+            Category.id == category_id,
+            or_(Category.user_id == user_id, Category.user_id.is_(None))
+        ).first()
         if not category:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Category not found.")
         if category.user_id is None:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="System categories cannot be modified.")
-        if category.user_id != user_id:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to edit this category.")
 
         if category_in.name is not None:
             category.name = category_in.name.strip()
@@ -94,13 +96,14 @@ class CategoryService:
 
     @staticmethod
     def delete_or_archive_category(db: Session, user_id: str, category_id: str) -> None:
-        category = db.query(Category).filter(Category.id == category_id).first()
+        category = db.query(Category).filter(
+            Category.id == category_id,
+            or_(Category.user_id == user_id, Category.user_id.is_(None))
+        ).first()
         if not category:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Category not found.")
         if category.user_id is None:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="System categories cannot be deleted.")
-        if category.user_id != user_id:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to delete this category.")
 
         tx_count = db.query(Transaction).filter(Transaction.category_id == category_id).count()
         if tx_count > 0:

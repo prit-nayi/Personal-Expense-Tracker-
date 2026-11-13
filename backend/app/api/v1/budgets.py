@@ -11,7 +11,7 @@ router = APIRouter(prefix="/budgets", tags=["Budgets"])
 
 @router.get("", response_model=List[BudgetOut])
 def get_budgets(
-    month: Optional[str] = Query(default=None, description="Month in format YYYY-MM"),
+    month: Optional[str] = Query(default=None, pattern=r"^\d{4}-(0[1-9]|1[0-2])$", description="Month in format YYYY-MM"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):

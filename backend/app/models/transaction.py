@@ -32,4 +32,5 @@ class Transaction(Base):
 
     __table_args__ = (
         Index("ix_transactions_user_occurred", "user_id", "occurred_at"),
+        Index("ix_tx_user_type_occurred", "user_id", "type", "occurred_at"),
     )

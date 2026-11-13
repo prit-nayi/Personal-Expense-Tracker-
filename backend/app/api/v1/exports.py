@@ -3,7 +3,7 @@ import io
 from datetime import datetime
 from typing import Optional
 from fastapi import APIRouter, Depends, Query, Response
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import or_, desc
 from app.db.session import get_db
 from app.api.deps import get_current_user
@@ -11,6 +11,14 @@ from app.models.user import User
 from app.models.transaction import Transaction
 
 router = APIRouter(prefix="/exports", tags=["Exports"])
+
+def sanitize_csv_cell(val: Optional[str]) -> str:
+    if not val:
+        return ""
+    s = str(val)
+    if s and s[0] in ("=", "+", "-", "@", "\t", "\r"):
+        return "'" + s
+    return s
 
 @router.get("/transactions/csv")
 def export_transactions_csv(
@@ -22,7 +30,11 @@ def export_transactions_csv(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    query = db.query(Transaction).filter(Transaction.user_id == current_user.id)
+    query = db.query(Transaction).options(
+        joinedload(Transaction.account),
+        joinedload(Transaction.destination_account),
+        joinedload(Transaction.category)
+    ).filter(Transaction.user_id == current_user.id)
     if start_date:
         query = query.filter(Transaction.occurred_at >= start_date)
     if end_date:
@@ -59,12 +71,12 @@ def export_transactions_csv(
             tx.type,
             str(tx.amount),
             tx.currency,
-            tx.account.name if tx.account else "",
-            tx.destination_account.name if tx.destination_account else "",
-            tx.category.name if tx.category else "",
-            tx.description or "",
-            tx.notes or "",
-            tx.tags or ""
+            sanitize_csv_cell(tx.account.name if tx.account else ""),
+            sanitize_csv_cell(tx.destination_account.name if tx.destination_account else ""),
+            sanitize_csv_cell(tx.category.name if tx.category else ""),
+            sanitize_csv_cell(tx.description or ""),
+            sanitize_csv_cell(tx.notes or ""),
+            sanitize_csv_cell(tx.tags or "")
         ])
 
     csv_content = output.getvalue()

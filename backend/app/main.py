@@ -1,8 +1,13 @@
+import os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from app.api.v1.auth import limiter
+from sqlalchemy import text
 from app.core.config import settings
 from app.db.session import engine, Base, SessionLocal
 from app.db.base import *  # noqa
@@ -11,12 +16,14 @@ from app.api.router import api_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Auto create database tables on startup if not present
-    Base.metadata.create_all(bind=engine)
-    # Seed default system categories
+    auto_create = os.getenv("AUTO_CREATE_TABLES", "true").lower() in ("true", "1")
+    if auto_create:
+        Base.metadata.create_all(bind=engine)
     db = SessionLocal()
     try:
-        seed_default_categories(db)
+        from app.models.category import Category
+        if db.query(Category).filter(Category.user_id.is_(None)).count() == 0:
+            seed_default_categories(db)
     finally:
         db.close()
     yield
@@ -28,6 +35,9 @@ app = FastAPI(
     redoc_url="/redoc",
     lifespan=lifespan
 )
+
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # Custom validation error handler returning string detail and sanitized JSON serializable errors
 @app.exception_handler(RequestValidationError)
@@ -57,8 +67,8 @@ if settings.BACKEND_CORS_ORIGINS:
         CORSMiddleware,
         allow_origins=[str(origin) for origin in settings.BACKEND_CORS_ORIGINS],
         allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        allow_methods=["GET", "POST", "PUT", "DELETE"],
+        allow_headers=["Authorization", "Content-Type"],
     )
 
 app.include_router(api_router, prefix=settings.API_V1_STR)
@@ -74,3 +84,17 @@ def root():
 @app.get("/health")
 def health():
     return {"status": "healthy"}
+
+@app.get("/health/db")
+def health_db():
+    db = SessionLocal()
+    try:
+        db.execute(text("SELECT 1"))
+        return {"status": "healthy", "database": "connected"}
+    except Exception as e:
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={"status": "unhealthy", "database": str(e)}
+        )
+    finally:
+        db.close()

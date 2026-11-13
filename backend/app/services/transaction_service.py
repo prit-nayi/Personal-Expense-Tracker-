@@ -1,7 +1,7 @@
 from datetime import datetime
 from decimal import Decimal
 from typing import Optional, List, Tuple
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import or_, desc, asc
 from fastapi import HTTPException, status
 from app.models.transaction import Transaction
@@ -17,13 +17,19 @@ class TransactionService:
         account_id: str,
         destination_account_id: Optional[str],
         category_id: Optional[str],
-        tx_type: str
-    ) -> None:
+        tx_type: str,
+        current_tx: Optional[Transaction] = None
+    ) -> Account:
+        """Validate referenced accounts and categories. Month boundaries are UTC."""
+        account_changing = (current_tx is None or current_tx.account_id != account_id)
+        dest_changing = (current_tx is None or current_tx.destination_account_id != destination_account_id)
+        cat_changing = (current_tx is None or current_tx.category_id != category_id)
+
         # Validate source account
         source_account = db.query(Account).filter(Account.id == account_id, Account.user_id == user_id).first()
         if not source_account:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Account not found.")
-        if source_account.is_archived:
+        if account_changing and source_account.is_archived:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cannot record transactions on an archived account.")
 
         if tx_type == "transfer":
@@ -34,8 +40,10 @@ class TransactionService:
             dest_account = db.query(Account).filter(Account.id == destination_account_id, Account.user_id == user_id).first()
             if not dest_account:
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Destination account not found.")
-            if dest_account.is_archived:
+            if dest_changing and dest_account.is_archived:
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cannot transfer to an archived account.")
+            if source_account.currency.upper() != dest_account.currency.upper():
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Transfers between accounts with different currencies are not allowed.")
         else:
             if not category_id:
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Category is required for income/expense.")
@@ -45,8 +53,10 @@ class TransactionService:
             ).first()
             if not category:
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Category not found.")
-            if category.is_archived:
+            if cat_changing and category.is_archived:
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cannot use an archived category.")
+
+        return source_account
 
     @staticmethod
     def _format_transaction_out(tx: Transaction) -> TransactionOut:
@@ -60,7 +70,7 @@ class TransactionService:
 
     @staticmethod
     def create_transaction(db: Session, user_id: str, tx_in: TransactionCreate) -> TransactionOut:
-        TransactionService._validate_references(
+        source_account = TransactionService._validate_references(
             db, user_id, tx_in.account_id, tx_in.destination_account_id, tx_in.category_id, tx_in.type
         )
         tx = Transaction(
@@ -70,7 +80,7 @@ class TransactionService:
             category_id=tx_in.category_id if tx_in.type != "transfer" else None,
             type=tx_in.type,
             amount=tx_in.amount,
-            currency=tx_in.currency.upper(),
+            currency=source_account.currency.upper(),
             occurred_at=tx_in.occurred_at,
             description=tx_in.description.strip(),
             notes=tx_in.notes,
@@ -83,7 +93,11 @@ class TransactionService:
 
     @staticmethod
     def get_transaction_by_id(db: Session, user_id: str, transaction_id: str) -> Transaction:
-        tx = db.query(Transaction).filter(
+        tx = db.query(Transaction).options(
+            joinedload(Transaction.account),
+            joinedload(Transaction.destination_account),
+            joinedload(Transaction.category)
+        ).filter(
             Transaction.id == transaction_id,
             Transaction.user_id == user_id
         ).first()
@@ -105,12 +119,13 @@ class TransactionService:
         target_cat_id = tx_in.category_id if tx_in.category_id is not None else tx.category_id
         target_type = tx_in.type if tx_in.type is not None else tx.type
 
-        TransactionService._validate_references(
-            db, user_id, target_account_id, target_dest_id, target_cat_id, target_type
+        source_account = TransactionService._validate_references(
+            db, user_id, target_account_id, target_dest_id, target_cat_id, target_type, current_tx=tx
         )
 
         if tx_in.account_id is not None:
             tx.account_id = tx_in.account_id
+        tx.currency = source_account.currency.upper()
         if tx_in.type is not None:
             tx.type = tx_in.type
             if tx.type != "transfer":
@@ -123,8 +138,6 @@ class TransactionService:
             tx.category_id = tx_in.category_id
         if tx_in.amount is not None:
             tx.amount = tx_in.amount
-        if tx_in.currency is not None:
-            tx.currency = tx_in.currency.upper()
         if tx_in.occurred_at is not None:
             tx.occurred_at = tx_in.occurred_at
         if tx_in.description is not None:
@@ -159,7 +172,11 @@ class TransactionService:
         sort_by: str = "occurred_at",
         sort_order: str = "desc"
     ) -> PaginatedTransactions:
-        query = db.query(Transaction).filter(Transaction.user_id == user_id)
+        query = db.query(Transaction).options(
+            joinedload(Transaction.account),
+            joinedload(Transaction.destination_account),
+            joinedload(Transaction.category)
+        ).filter(Transaction.user_id == user_id)
 
         if start_date:
             query = query.filter(Transaction.occurred_at >= start_date)
@@ -174,19 +191,27 @@ class TransactionService:
         if tx_type:
             query = query.filter(Transaction.type == tx_type)
         if search:
-            search_pattern = f"%{search.strip()}%"
+            escaped_search = search.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            search_pattern = f"%{escaped_search}%"
             query = query.filter(
                 or_(
-                    Transaction.description.ilike(search_pattern),
-                    Transaction.notes.ilike(search_pattern),
-                    Transaction.tags.ilike(search_pattern)
+                    Transaction.description.ilike(search_pattern, escape="\\"),
+                    Transaction.notes.ilike(search_pattern, escape="\\"),
+                    Transaction.tags.ilike(search_pattern, escape="\\")
                 )
             )
 
         total = query.count()
         total_pages = (total + limit - 1) // limit if total > 0 else 1
 
-        order_col = getattr(Transaction, sort_by, Transaction.occurred_at)
+        ALLOWED_SORT_FIELDS = {"occurred_at", "amount", "created_at", "description"}
+        if sort_by not in ALLOWED_SORT_FIELDS:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Invalid sort_by field '{sort_by}'."
+            )
+
+        order_col = getattr(Transaction, sort_by)
         if sort_order.lower() == "asc":
             query = query.order_by(asc(order_col), asc(Transaction.id))
         else:

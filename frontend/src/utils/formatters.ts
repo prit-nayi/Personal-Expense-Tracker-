@@ -1,19 +1,21 @@
 import { format, parseISO } from 'date-fns';
 
 export function formatCurrency(amount: string | number | null | undefined, currency: string = 'USD'): string {
+  const curr = currency || 'USD';
   if (amount === null || amount === undefined || isNaN(Number(amount))) {
-    return '$0.00';
+    return `${curr} 0.00`;
   }
   const numeric = Number(amount);
+  const locale = curr.toUpperCase() === 'INR' ? 'en-IN' : 'en-US';
   try {
-    return new Intl.NumberFormat('en-US', {
+    return new Intl.NumberFormat(locale, {
       style: 'currency',
-      currency: currency || 'USD',
+      currency: curr,
       minimumFractionDigits: 2,
       maximumFractionDigits: 2,
     }).format(numeric);
   } catch (e) {
-    return `$${numeric.toFixed(2)}`;
+    return `${curr} ${numeric.toFixed(2)}`;
   }
 }
 

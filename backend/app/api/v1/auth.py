@@ -1,5 +1,9 @@
-from fastapi import APIRouter, Depends, status
+import sys
+from fastapi import APIRouter, Depends, status, Request
+from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 from app.db.session import get_db
 from app.db.seed import seed_default_categories
 from app.schemas.user import UserCreate, UserLogin, UserOut, UserUpdate, PasswordChange, Token
@@ -8,12 +12,16 @@ from app.core.security import create_access_token
 from app.api.deps import get_current_user
 from app.models.user import User
 
+limiter = Limiter(
+    key_func=get_remote_address,
+    enabled=not ("pytest" in sys.modules or any("pytest" in arg for arg in sys.argv))
+)
+
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 @router.post("/register", response_model=Token, status_code=status.HTTP_201_CREATED)
-def register(user_in: UserCreate, db: Session = Depends(get_db)):
-    # Ensure default system categories are seeded in the database
-    seed_default_categories(db)
+@limiter.limit("5/minute")
+def register(request: Request, user_in: UserCreate, db: Session = Depends(get_db)):
     user = AuthService.register_user(db, user_in)
     access_token = create_access_token(subject=user.id)
     return Token(
@@ -23,8 +31,19 @@ def register(user_in: UserCreate, db: Session = Depends(get_db)):
     )
 
 @router.post("/login", response_model=Token)
-def login(credentials: UserLogin, db: Session = Depends(get_db)):
+@limiter.limit("5/minute")
+def login(request: Request, credentials: UserLogin, db: Session = Depends(get_db)):
     user = AuthService.authenticate_user(db, credentials)
+    access_token = create_access_token(subject=user.id)
+    return Token(
+        access_token=access_token,
+        token_type="bearer",
+        user=UserOut.model_validate(user)
+    )
+
+@router.post("/token", response_model=Token)
+def login_for_swagger(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+    user = AuthService.authenticate_user(db, UserLogin(email=form_data.username, password=form_data.password))
     access_token = create_access_token(subject=user.id)
     return Token(
         access_token=access_token,
